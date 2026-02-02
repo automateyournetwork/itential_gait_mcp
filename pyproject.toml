@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "itential-gait-mcp"
+version = "0.1.0"
+description = "GAIT MCP Server for Itential FlowAI"
+readme = "README.md"
+license = "GPL-3.0"
+requires-python = ">=3.10"
+keywords = ["mcp", "ai", "tracking", "itential", "flowai", "gait"]
+
+dependencies = [
+    "mcp>=1.0.0",
+    "uvicorn>=0.30.0",
+]
+
+[project.scripts]
+itential-gait-mcp = "gait_mcp:main"
