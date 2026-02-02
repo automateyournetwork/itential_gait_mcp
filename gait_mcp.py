@@ -379,11 +379,11 @@ def log(agent_id: str, limit: int = 20) -> dict:
     if err:
         return err
     if not repo.gait_dir.exists():
-        return {"ok": False, "error": "GAIT not initialized", "agent_id": agent_id}
+        return {"ok": True, "agent_id": agent_id, "message": "No commits yet - GAIT not initialized", "commits": []}
     commits = []
     head = repo.head_commit_id()
     if not head:
-        return {"ok": True, "agent_id": agent_id, "branch": repo.current_branch(), "commits": []}
+        return {"ok": True, "agent_id": agent_id, "branch": repo.current_branch(), "message": "No commits yet", "commits": []}
     cid = head
     seen = set()
     while cid and cid not in seen and len(commits) < limit:
@@ -391,6 +391,7 @@ def log(agent_id: str, limit: int = 20) -> dict:
         try:
             c = repo.get_commit(cid)
         except FileNotFoundError:
+            # Object missing, stop walking but don't fail
             break
         parents = c.get("parents") or []
         commits.append({
@@ -402,6 +403,8 @@ def log(agent_id: str, limit: int = 20) -> dict:
             "turns": len(c.get("turn_ids", []))
         })
         cid = parents[0] if parents else ""
+    if not commits:
+        return {"ok": True, "agent_id": agent_id, "branch": repo.current_branch(), "message": "No commits yet", "commits": []}
     return {"ok": True, "agent_id": agent_id, "branch": repo.current_branch(), "commits": commits}
 
 
@@ -420,22 +423,28 @@ def show(agent_id: str, commit: str = "HEAD") -> dict:
     repo, err = _get_repo(agent_id)
     if err:
         return err
+    if not repo.gait_dir.exists():
+        return {"ok": True, "agent_id": agent_id, "message": "No commits yet - GAIT not initialized", "turns": []}
     head = repo.head_commit_id()
     if not head:
-        return {"ok": False, "error": "No commits yet", "agent_id": agent_id}
+        return {"ok": True, "agent_id": agent_id, "message": "No commits yet", "turns": []}
     cid = head if commit in ("", "HEAD", "@") else commit
     try:
         c = repo.get_commit(cid)
     except FileNotFoundError:
-        return {"ok": False, "error": f"Commit not found: {commit}", "agent_id": agent_id}
+        return {"ok": True, "agent_id": agent_id, "message": f"Commit not found: {short_oid(cid)}", "turns": []}
     turns = []
     for tid in c.get("turn_ids", []):
-        t = repo.get_turn(tid)
-        turns.append({
-            "turn_id": short_oid(tid),
-            "user": (t.get("user") or {}).get("text", ""),
-            "assistant": (t.get("assistant") or {}).get("text", "")
-        })
+        try:
+            t = repo.get_turn(tid)
+            turns.append({
+                "turn_id": short_oid(tid),
+                "user": (t.get("user") or {}).get("text", ""),
+                "assistant": (t.get("assistant") or {}).get("text", "")
+            })
+        except FileNotFoundError:
+            # Turn object missing, skip it
+            turns.append({"turn_id": short_oid(tid), "error": "Turn data not found"})
     return {
         "ok": True,
         "agent_id": agent_id,
@@ -461,23 +470,31 @@ def resume(agent_id: str, turns: int = 10) -> dict:
     repo, err = _get_repo(agent_id)
     if err:
         return err
+    if not repo.gait_dir.exists():
+        return {"ok": True, "agent_id": agent_id, "message": "No history yet - GAIT not initialized", "history": []}
     head = repo.head_commit_id()
     if not head:
-        return {"ok": False, "error": "No commits yet", "agent_id": agent_id}
+        return {"ok": True, "agent_id": agent_id, "message": "No history yet", "history": []}
     collected = []
     cid = head
     seen = set()
     while cid and cid not in seen and len(collected) < turns:
         seen.add(cid)
-        c = repo.get_commit(cid)
+        try:
+            c = repo.get_commit(cid)
+        except FileNotFoundError:
+            break
         for tid in c.get("turn_ids", []):
             if len(collected) >= turns:
                 break
-            t = repo.get_turn(tid)
-            user_txt = (t.get("user") or {}).get("text", "")
-            asst_txt = (t.get("assistant") or {}).get("text", "")
-            if user_txt or asst_txt:
-                collected.append({"user": user_txt, "assistant": asst_txt})
+            try:
+                t = repo.get_turn(tid)
+                user_txt = (t.get("user") or {}).get("text", "")
+                asst_txt = (t.get("assistant") or {}).get("text", "")
+                if user_txt or asst_txt:
+                    collected.append({"user": user_txt, "assistant": asst_txt})
+            except FileNotFoundError:
+                continue
         parents = c.get("parents") or []
         cid = parents[0] if parents else ""
     collected.reverse()
@@ -505,12 +522,17 @@ def memory(agent_id: str) -> dict:
     repo, err = _get_repo(agent_id)
     if err:
         return err
-    manifest = repo.get_memory()
-    items = [
-        {"index": i, "turn": short_oid(it.turn_id), "commit": short_oid(it.commit_id), "note": it.note}
-        for i, it in enumerate(manifest.items, start=1)
-    ]
-    return {"ok": True, "agent_id": agent_id, "branch": repo.current_branch(), "items": items}
+    if not repo.gait_dir.exists():
+        return {"ok": True, "agent_id": agent_id, "message": "No memory yet - GAIT not initialized", "items": []}
+    try:
+        manifest = repo.get_memory()
+        items = [
+            {"index": i, "turn": short_oid(it.turn_id), "commit": short_oid(it.commit_id), "note": it.note}
+            for i, it in enumerate(manifest.items, start=1)
+        ]
+        return {"ok": True, "agent_id": agent_id, "branch": repo.current_branch(), "items": items}
+    except Exception as e:
+        return {"ok": True, "agent_id": agent_id, "message": f"Could not read memory: {str(e)}", "items": []}
 
 
 @mcp.tool()
