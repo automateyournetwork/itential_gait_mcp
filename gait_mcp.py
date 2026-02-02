@@ -934,8 +934,15 @@ def _patch_tool_schemas():
         tools = mcp._tool_manager._tools
         for name, tool in tools.items():
             if hasattr(tool, 'parameters') and isinstance(tool.parameters, dict):
+                # Ensure required field exists
                 if 'required' not in tool.parameters:
                     tool.parameters['required'] = []
+                # Ensure properties field exists
+                if 'properties' not in tool.parameters:
+                    tool.parameters['properties'] = {}
+                # Ensure type field exists
+                if 'type' not in tool.parameters:
+                    tool.parameters['type'] = 'object'
     except Exception as e:
         log.warning(f"Could not patch tool schemas: {e}")
 
