@@ -946,15 +946,5 @@ _patch_tool_schemas()
 # Main
 # ---------------------------------------------------------------------
 if __name__ == "__main__":
-    import uvicorn
-
-    # Ensure storage root exists
     GAIT_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
-
-    host = os.environ.get("GAIT_MCP_HOST", "0.0.0.0")
-    port = int(os.environ.get("GAIT_MCP_PORT", "8000"))
-
-    log.info(f"Itential GAIT MCP starting on {host}:{port}")
-    log.info(f"Storage root: {GAIT_STORAGE_ROOT}")
-
-    uvicorn.run(mcp.sse_app(), host=host, port=port)
+    mcp.run()
