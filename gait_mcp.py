@@ -98,7 +98,10 @@ class LocalGaitRepo:
         oid = self._hash(content)
         obj_path = self._objects_dir() / oid[:2] / oid[2:]
         obj_path.parent.mkdir(parents=True, exist_ok=True)
-        obj_path.write_bytes(content)
+        with open(obj_path, 'wb') as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
         return oid
 
     def _read_object(self, oid: str) -> dict:
@@ -138,7 +141,11 @@ class LocalGaitRepo:
     def _write_ref(self, name: str, commit_id: str) -> None:
         ref_path = self._refs_dir() / name
         ref_path.parent.mkdir(parents=True, exist_ok=True)
-        ref_path.write_text(commit_id)
+        # Write with explicit flush to ensure data is persisted
+        with open(ref_path, 'w') as f:
+            f.write(commit_id)
+            f.flush()
+            os.fsync(f.fileno())
 
     def _read_memory_ref(self, branch: str) -> str:
         mem_path = self._memory_refs_dir() / branch
@@ -149,7 +156,10 @@ class LocalGaitRepo:
     def _write_memory_ref(self, branch: str, memory_id: str) -> None:
         mem_path = self._memory_refs_dir() / branch
         mem_path.parent.mkdir(parents=True, exist_ok=True)
-        mem_path.write_text(memory_id)
+        with open(mem_path, 'w') as f:
+            f.write(memory_id)
+            f.flush()
+            os.fsync(f.fileno())
 
     def head_commit_id(self) -> Optional[str]:
         return self._read_ref(self.current_branch())
@@ -355,11 +365,16 @@ def record_turn(
         "model": {"provider": "flowai"}
     }
     turn_id, commit_id = repo.record_turn(turn_data, message=note)
+    # Verify the ref was written
+    head_after = repo.head_commit_id()
     return {
         "ok": True,
         "agent_id": agent_id,
-        "commit": short_oid(commit_id),
-        "turn_id": short_oid(turn_id)
+        "commit": commit_id,
+        "commit_short": short_oid(commit_id),
+        "turn_id": short_oid(turn_id),
+        "head": head_after,
+        "branch": repo.current_branch()
     }
 
 
