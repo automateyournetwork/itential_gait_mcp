@@ -12,9 +12,8 @@ import hashlib
 import json
 import logging
 import os
-import re
 import sys
-from datetime import datetime, timezone
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
@@ -90,25 +89,36 @@ class LocalGaitRepo:
     def _memory_refs_dir(self) -> Path:
         return self._gait_dir / "refs" / "memory"
 
-    def _hash(self, data: bytes) -> str:
-        return hashlib.sha256(data).hexdigest()
+    def _canonical_json(self, obj: dict) -> bytes:
+        return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+    def _object_id(self, obj: dict) -> str:
+        return hashlib.sha256(self._canonical_json(obj)).hexdigest()
+
+    def _fanout_path(self, oid: str) -> Path:
+        return self._objects_dir() / oid[:2] / oid[2:4] / oid
 
     def _write_object(self, data: dict) -> str:
-        content = json.dumps(data, sort_keys=True, separators=(',', ':')).encode()
-        oid = self._hash(content)
-        obj_path = self._objects_dir() / oid[:2] / oid[2:]
+        oid = self._object_id(data)
+        obj_path = self._fanout_path(oid)
         obj_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(obj_path, 'wb') as f:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
+        if not obj_path.exists():
+            with open(obj_path, 'wb') as f:
+                f.write(self._canonical_json(data) + b"\n")
+                f.flush()
+                os.fsync(f.fileno())
         return oid
 
     def _read_object(self, oid: str) -> dict:
-        obj_path = self._objects_dir() / oid[:2] / oid[2:]
+        obj_path = self._fanout_path(oid)
         if not obj_path.exists():
             raise FileNotFoundError(f"Object not found: {oid}")
-        return json.loads(obj_path.read_bytes())
+        raw = obj_path.read_text(encoding="utf-8").strip()
+        return json.loads(raw)
+
+    @staticmethod
+    def _now_iso() -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
 
     def init(self) -> dict:
         existed = self._gait_dir.exists()
@@ -118,7 +128,11 @@ class LocalGaitRepo:
             self._refs_dir().mkdir(parents=True, exist_ok=True)
             self._memory_refs_dir().mkdir(parents=True, exist_ok=True)
             (self._gait_dir / "HEAD").write_text("ref: refs/heads/main\n")
-            manifest = {"version": 1, "items": []}
+            manifest = {
+                "schema": "gait.memory.v0",
+                "created_at": self._now_iso(),
+                "items": []
+            }
             mem_id = self._write_object(manifest)
             self._write_memory_ref("main", mem_id)
         return {"existed": existed, "root": str(self._root), "gait_dir": str(self._gait_dir)}
@@ -177,12 +191,15 @@ class LocalGaitRepo:
         branch = self.current_branch()
         parent = self._read_ref(branch)
         commit = {
-            "type": "commit",
-            "kind": "turn",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "message": message,
+            "schema": "gait.commit.v0",
+            "created_at": self._now_iso(),
+            "parents": [parent] if parent else [],
             "turn_ids": [turn_id],
-            "parents": [parent] if parent else []
+            "snapshot_id": None,
+            "branch": branch,
+            "kind": "auto",
+            "message": message,
+            "meta": {}
         }
         commit_id = self._write_object(commit)
         self._write_ref(branch, commit_id)
@@ -221,10 +238,15 @@ class LocalGaitRepo:
             try:
                 manifest = self._read_object(mem_id)
             except FileNotFoundError:
-                manifest = {"version": 1, "items": []}
+                manifest = {"schema": "gait.memory.v0", "created_at": self._now_iso(), "items": []}
         else:
-            manifest = {"version": 1, "items": []}
-        manifest["items"].append({"turn_id": turn_id, "commit_id": commit_id, "note": note})
+            manifest = {"schema": "gait.memory.v0", "created_at": self._now_iso(), "items": []}
+        manifest["items"].append({
+            "pinned_at": self._now_iso(),
+            "commit_id": commit_id,
+            "turn_id": turn_id,
+            "note": note
+        })
         new_mem_id = self._write_object(manifest)
         self._write_memory_ref(branch, new_mem_id)
         return new_mem_id
@@ -263,7 +285,7 @@ class LocalGaitRepo:
         return commit_id
 
     def reset_memory_to_commit(self, branch: str, commit_id: Optional[str]) -> str:
-        manifest = {"version": 1, "items": []}
+        manifest = {"schema": "gait.memory.v0", "created_at": self._now_iso(), "items": []}
         new_mem_id = self._write_object(manifest)
         self._write_memory_ref(branch, new_mem_id)
         return new_mem_id
@@ -357,12 +379,20 @@ def record_turn(
     if not repo.gait_dir.exists():
         repo.init()
     turn_data = {
-        "version": 0,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "user": {"text": user_text},
-        "assistant": {"text": assistant_text},
-        "context": {"artifacts": []},
-        "model": {"provider": "flowai"}
+        "schema": "gait.turn.v0",
+        "created_at": repo._now_iso(),
+        "user": {"type": "message", "text": user_text},
+        "assistant": {"type": "message", "text": assistant_text},
+        "context": {},
+        "tools": {},
+        "model": {"provider": "flowai"},
+        "tokens": {
+            "input_total": None,
+            "output_total": None,
+            "estimated": True,
+            "by_role": {}
+        },
+        "visibility": "private"
     }
     turn_id, commit_id = repo.record_turn(turn_data, message=note)
     # Verify the ref was written
